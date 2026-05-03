@@ -106,7 +106,47 @@ export function createUI(eventBus, dataService, rootEl) {
     //   EXTRA CREDIT: set data-row-id="<row.id>" on the <tr> so the
     //   row-click handler can read it via event delegation, and so
     //   showDetail() can find the selected tr to highlight.
+    
+    const tr = document.createElement('tr');
 
+    // EXTRA CREDIT: tag each row with its id for event delegation and highlight
+    tr.setAttribute('data-row-id', row.id);
+
+    // Helper: create a plain td with text content
+    function makeTd(text, className) {
+      const td = document.createElement('td');
+      td.textContent = text;
+      if (className) td.className = className;
+      return td;
+    }
+
+    // Year
+    tr.appendChild(makeTd(row.year));
+
+    // Month
+    tr.appendChild(makeTd(row.month));
+
+    // Country
+    tr.appendChild(makeTd(row.country));
+
+    // District
+    tr.appendChild(makeTd(row.district));
+
+    // Purpose — wrapped in a badge span
+    const purposeTd   = document.createElement('td');
+    const purposeSpan = document.createElement('span');
+    purposeSpan.className   = 'purpose-badge';
+    purposeSpan.textContent = row.purpose; // textContent — never innerHTML
+    purposeTd.appendChild(purposeSpan);
+    tr.appendChild(purposeTd);
+
+    // Arrivals — numeric cell with thousands separator
+    tr.appendChild(makeTd(formatNumber(row.arrivals), 'num'));
+
+    // Avg Stay Nights — numeric cell
+    tr.appendChild(makeTd(row.avgStayNights, 'num'));
+
+    return tr;
   }
 
   /**
@@ -122,6 +162,24 @@ export function createUI(eventBus, dataService, rootEl) {
     //       * Return early.
     //   - Otherwise build all rows into a DocumentFragment, then append once.
 
+    els.tbody.replaceChildren(); // Clear previous rows — idempotent
+
+    if (visibleRows.length === 0) {
+      // Empty state row — single cell spanning all columns
+      const tr = document.createElement('tr');
+      tr.className = 'empty-row';
+      const td = document.createElement('td');
+      td.setAttribute('colspan', '7');
+      td.textContent = 'No results match your search and filters.';
+      tr.appendChild(td);
+      els.tbody.appendChild(tr);
+      return;
+    }
+
+    // Build all rows into a DocumentFragment — ONE DOM write at the end
+    const frag = new DocumentFragment();
+    visibleRows.forEach(row => frag.appendChild(buildRowElement(row)));
+    els.tbody.appendChild(frag);
   }
 
   /**
@@ -137,6 +195,22 @@ export function createUI(eventBus, dataService, rootEl) {
     //   - Find the header whose data-sort-column === sortColumn.
     //   - Add 'is-sort-asc' or 'is-sort-desc' based on sortDirection.
 
+    // Clear all indicators first — idempotent
+    els.sortHeaders.forEach(th => {
+      th.classList.remove('is-sort-asc', 'is-sort-desc');
+    });
+
+    if (sortColumn === null) return;
+
+    // Find the active header and apply the correct class
+    const activeHeader = Array.from(els.sortHeaders)
+      .find(th => th.dataset.sortColumn === sortColumn);
+
+    if (activeHeader) {
+      activeHeader.classList.add(
+        sortDirection === 'asc' ? 'is-sort-asc' : 'is-sort-desc'
+      );
+    }
   }
 
   /**
@@ -153,6 +227,11 @@ export function createUI(eventBus, dataService, rootEl) {
     //   - els.pageNext.disabled  = page >= pageCount
     //   - els.pageLast.disabled  = page >= pageCount
 
+    els.pageInfo.textContent  = `Page ${page} of ${pageCount}`;
+    els.pageFirst.disabled    = page <= 1;
+    els.pagePrev.disabled     = page <= 1;
+    els.pageNext.disabled     = page >= pageCount;
+    els.pageLast.disabled     = page >= pageCount;
   }
 
   /**
@@ -168,6 +247,13 @@ export function createUI(eventBus, dataService, rootEl) {
     //   - Use formatNumber() for each count.
     //   - els.statusText.textContent = message
 
+    els.status.classList.remove('is-error');
+
+    const message = totalFiltered === totalAll
+      ? `Showing ${formatNumber(visibleCount)} of ${formatNumber(totalAll)} rows`
+      : `Showing ${formatNumber(visibleCount)} of ${formatNumber(totalFiltered)} rows (filtered from ${formatNumber(totalAll)} total)`;
+
+    els.statusText.textContent = message;
   }
 
   function showStatus(message, opts = {}) {
@@ -201,6 +287,23 @@ export function createUI(eventBus, dataService, rootEl) {
     //   - Find the <tr> in the tbody with matching data-row-id (see
     //     buildRowElement bonus TODO below) and add 'is-selected'.
 
+    // Populate all detail fields — textContent only, never innerHTML
+    els.detailYear.textContent     = row.year;
+    els.detailMonth.textContent    = row.month;
+    els.detailCountry.textContent  = row.country;
+    els.detailDistrict.textContent = row.district;
+    els.detailPurpose.textContent  = row.purpose;
+    els.detailArrivals.textContent = formatNumber(row.arrivals);
+    els.detailStay.textContent     = `${row.avgStayNights} nights`;
+    els.detailId.textContent       = row.id;
+
+    // Show the modal
+    els.detail.classList.add('is-visible');
+    els.detail.setAttribute('aria-hidden', 'false');
+
+    // Highlight the matching row in the table body if it is currently visible
+    const matchingTr = els.tbody.querySelector(`[data-row-id="${row.id}"]`);
+    if (matchingTr) matchingTr.classList.add('is-selected');
   }
 
   /**
@@ -212,6 +315,12 @@ export function createUI(eventBus, dataService, rootEl) {
     //   - Set aria-hidden="true" on els.detail.
     //   - Remove 'is-selected' from whichever tbody tr currently has it.
 
+    els.detail.classList.remove('is-visible');
+    els.detail.setAttribute('aria-hidden', 'true');
+
+    // Remove highlight from whichever row is currently selected
+    const selectedTr = els.tbody.querySelector('.is-selected');
+    if (selectedTr) selectedTr.classList.remove('is-selected');
   }
 
   // -------------------------------------------------------------------------
@@ -225,6 +334,7 @@ export function createUI(eventBus, dataService, rootEl) {
     //   on every keystroke. In production you'd debounce; keeping it
     //   simple here keeps the pattern the focus.
 
+    dataService.setSearch(domEvent.target.value);
   }
 
   function onFilterChange(domEvent) {
@@ -234,6 +344,14 @@ export function createUI(eventBus, dataService, rootEl) {
     //   - Map the role to the filter key ('district', 'purpose', 'year').
     //   - Call dataService.setFilter(key, domEvent.target.value).
 
+    // Map data-role attribute to the filter key the service expects
+    const roleToKey = {
+      'filter-district': 'district',
+      'filter-purpose':  'purpose',
+      'filter-year':     'year',
+    };
+    const key = roleToKey[domEvent.target.dataset.role];
+    if (key) dataService.setFilter(key, domEvent.target.value);
   }
 
   function onSortHeaderClick(domEvent) {
@@ -242,6 +360,9 @@ export function createUI(eventBus, dataService, rootEl) {
     //   - Read the column name from its dataset.
     //   - Call dataService.setSort(column).
 
+    const th = domEvent.target.closest('[data-sort-column]');
+    if (!th) return; // click was not on a sortable header
+    dataService.setSort(th.dataset.sortColumn);
   }
 
   function onResetClick() {
@@ -253,6 +374,13 @@ export function createUI(eventBus, dataService, rootEl) {
     //       els.filterYear.value = '';
     //   - Call dataService.resetView().
 
+    // Clear DOM controls so they visually reflect the reset state
+    els.search.value          = '';
+    els.filterDistrict.value  = '';
+    els.filterPurpose.value   = '';
+    els.filterYear.value      = '';
+
+    dataService.resetView();
   }
 
   // Pagination handlers — each calls setPage with the right number.
@@ -281,6 +409,12 @@ export function createUI(eventBus, dataService, rootEl) {
     //   - Read data-row-id from its dataset and convert to Number.
     //   - Call dataService.selectRow(id).
 
+    const tr = domEvent.target.closest('tr');
+    if (!tr) return;
+    if (tr.classList.contains('empty-row')) return; // do not open modal for empty state row
+
+    const id = Number(tr.dataset.rowId);
+    dataService.selectRow(id);
   }
 
   /**
@@ -334,6 +468,35 @@ export function createUI(eventBus, dataService, rootEl) {
     //   - 'row:selected'   → showDetail(row)
     //   - 'row:deselected' → hideDetail()
 
+    subscribe('data:loading', () => {
+      showStatus('Loading tourism data…');
+    });
+
+    subscribe('data:loadFailed', ({ message }) => {
+      showStatus(`Failed to load data: ${message}`, { error: true });
+    });
+
+    // view:changed carries everything the UI needs to fully re-render
+    subscribe('view:changed', ({ visibleRows, totalFiltered, totalAll,
+                                  page, pageCount, sortColumn, sortDirection }) => {
+      // Keep pagination handler vars in sync
+      currentPage      = page;
+      currentPageCount = pageCount;
+
+      renderTable(visibleRows);
+      renderSortIndicators(sortColumn, sortDirection);
+      renderPagination(page, pageCount);
+      renderStatus(totalFiltered, totalAll, visibleRows.length);
+    });
+
+    // EXTRA CREDIT — row detail modal subscriptions
+    subscribe('row:selected', ({ row }) => {
+      showDetail(row);
+    });
+
+    subscribe('row:deselected', () => {
+      hideDetail();
+    });
   }
 
   // -------------------------------------------------------------------------

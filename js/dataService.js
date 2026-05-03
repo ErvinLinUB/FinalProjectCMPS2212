@@ -148,6 +148,9 @@ export function createDataService(eventBus, dataUrl) {
     //   - Otherwise return rows.filter(...) where the row's `country`
     //     (lowercased) includes the searchTerm (lowercased and trimmed).
 
+    const term = searchTerm.trim().toLowerCase();
+    if (!term) return rows;
+    return rows.filter(row => row.country.toLowerCase().includes(term));
   }
 
   /**
@@ -166,6 +169,12 @@ export function createDataService(eventBus, dataUrl) {
     //   - Check filters.year:     if non-empty, String(row.year) must equal it.
     //                             (Because the select emits strings.)
 
+    return rows.filter(row => {
+      if (filters.district && row.district !== filters.district) return false;
+      if (filters.purpose  && row.purpose  !== filters.purpose)  return false;
+      if (filters.year     && String(row.year) !== filters.year)  return false;
+      return true;
+    });
   }
 
   /**
@@ -196,6 +205,30 @@ export function createDataService(eventBus, dataUrl) {
     //   - If sortDirection is 'desc', reverse the result.
     //   - Return the sorted clone.
 
+    if (sortColumn === null) return rows;
+
+    const clone = rows.slice();
+    clone.sort((a, b) => {
+      const aVal = a[sortColumn];
+      const bVal = b[sortColumn];
+
+      let result;
+      if (sortColumn === 'month') {
+        // Calendar order — use MONTH_ORDER lookup
+        result = MONTH_ORDER[aVal] - MONTH_ORDER[bVal];
+      } else if (typeof aVal === 'number' && typeof bVal === 'number') {
+        // Numeric comparison
+        result = aVal - bVal;
+      } else {
+        // String comparison
+        result = String(aVal).localeCompare(String(bVal));
+      }
+      return result;
+    });
+
+    // Reverse in place for descending direction
+    if (sortDirection === 'desc') clone.reverse();
+    return clone;
   }
 
   /**
@@ -207,6 +240,8 @@ export function createDataService(eventBus, dataUrl) {
     //   - startIndex = (page - 1) * pageSize
     //   - return rows.slice(startIndex, startIndex + pageSize)
 
+    const startIndex = (page - 1) * pageSize;
+    return rows.slice(startIndex, startIndex + pageSize);
   }
 
   /**
@@ -217,6 +252,7 @@ export function createDataService(eventBus, dataUrl) {
     // TODO (5):
     //   - Math.max(1, Math.ceil(rowCount / pageSize))
 
+    return Math.max(1, Math.ceil(rowCount / pageSize));
   }
 
   /**
@@ -227,6 +263,7 @@ export function createDataService(eventBus, dataUrl) {
     // TODO (6):
     //   - Math.min(pageCount, Math.max(1, page))
 
+    return Math.min(pageCount, Math.max(1, page));
   }
 
   // -------------------------------------------------------------------------
@@ -254,6 +291,29 @@ export function createDataService(eventBus, dataUrl) {
     //   - paginated  = applyPagination(sorted, state.view.page, state.view.pageSize)
     //   - Emit 'view:changed' with the full payload shape documented at the top.
 
+    if (state.status !== 'ready') return;
+
+    const searched      = applySearch(state.allRows, state.view.searchTerm);
+    const filtered      = applyFilters(searched, state.view.filters);
+    const totalFiltered = filtered.length;
+    const pageCount     = computePageCount(totalFiltered, state.view.pageSize);
+
+    // Clamp page — must mutate state so pagination buttons reflect reality
+    state.view.page = clampPage(state.view.page, pageCount);
+
+    const sorted    = applySort(filtered, state.view.sortColumn, state.view.sortDirection);
+    const paginated = applyPagination(sorted, state.view.page, state.view.pageSize);
+
+    eventBus.emit('view:changed', {
+      visibleRows:   paginated,
+      totalAll:      state.allRows.length,
+      totalFiltered,
+      page:          state.view.page,
+      pageCount,
+      pageSize:      state.view.pageSize,
+      sortColumn:    state.view.sortColumn,
+      sortDirection: state.view.sortDirection,
+    });
   }
 
   // -------------------------------------------------------------------------
@@ -277,7 +337,26 @@ export function createDataService(eventBus, dataUrl) {
     //   - On failure:
     //       * state.status = 'error'
     //       * emit 'data:loadFailed' with { message: err.message }
+    
+    state.status = 'loading';
+    eventBus.emit('data:loading', null);
 
+    try {
+      const response = await fetch(dataUrl);
+      if (!response.ok) {
+        throw new Error(`HTTP ${response.status}`);
+      }
+      const data = await response.json();
+
+      state.allRows = data;
+      state.status  = 'ready';
+
+      eventBus.emit('data:loaded', { totalAll: state.allRows.length });
+      recomputeAndEmit(); // renders the table immediately after load
+    } catch (err) {
+      state.status = 'error';
+      eventBus.emit('data:loadFailed', { message: err.message });
+    }
   }
 
   /**
@@ -290,6 +369,9 @@ export function createDataService(eventBus, dataUrl) {
     //   - state.view.page = 1
     //   - recomputeAndEmit()
 
+    state.view.searchTerm = String(term);
+    state.view.page = 1;
+    recomputeAndEmit();
   }
 
   /**
@@ -305,6 +387,13 @@ export function createDataService(eventBus, dataUrl) {
     //   - state.view.page = 1
     //   - recomputeAndEmit()
 
+    const allowed = ['district', 'purpose', 'year'];
+    if (!allowed.includes(key)) {
+      throw new TypeError(`setFilter: invalid key "${key}". Must be one of: ${allowed.join(', ')}.`);
+    }
+    state.view.filters[key] = String(value);
+    state.view.page = 1;
+    recomputeAndEmit();
   }
 
   /**
@@ -323,6 +412,15 @@ export function createDataService(eventBus, dataUrl) {
     //       * state.view.sortDirection = 'asc'
     //   - recomputeAndEmit()
 
+    if (state.view.sortColumn === column) {
+      // Same column — toggle direction
+      state.view.sortDirection = state.view.sortDirection === 'asc' ? 'desc' : 'asc';
+    } else {
+      // New column — reset to ascending
+      state.view.sortColumn    = column;
+      state.view.sortDirection = 'asc';
+    }
+    recomputeAndEmit();
   }
 
   /**
@@ -333,6 +431,8 @@ export function createDataService(eventBus, dataUrl) {
     //   - state.view.page = Number(page) || 1
     //   - recomputeAndEmit()
 
+    state.view.page = Number(page) || 1;
+    recomputeAndEmit();
   }
 
   /**
@@ -344,6 +444,19 @@ export function createDataService(eventBus, dataUrl) {
     //     createInitialState, but do NOT reset allRows or status).
     //   - recomputeAndEmit()
 
+    state.view = {
+      searchTerm: '',
+      filters: {
+        district: '',
+        purpose: '',
+        year: '',
+      },
+      sortColumn: null,
+      sortDirection: 'asc',
+      page: 1,
+      pageSize: PAGE_SIZE,
+    };
+    recomputeAndEmit();
   }
 
   // ==========================================================================
@@ -369,6 +482,12 @@ export function createDataService(eventBus, dataUrl) {
     //   - state.selectedRowId = id
     //   - Emit 'row:selected' with { row }.
 
+    const numericId = Number(id);
+    const row = state.allRows.find(r => r.id === numericId);
+    if (!row) return; // unknown id — silent no-op
+
+    state.selectedRowId = numericId;
+    eventBus.emit('row:selected', { row });
   }
 
   /**
@@ -380,7 +499,11 @@ export function createDataService(eventBus, dataUrl) {
     //   - If state.selectedRowId is null, return (nothing to do).
     //   - state.selectedRowId = null
     //   - Emit 'row:deselected' with null payload.
+    
+    if (state.selectedRowId === null) return; // nothing selected — silent no-op
 
+    state.selectedRowId = null;
+    eventBus.emit('row:deselected', null);
   }
 
   return Object.freeze({
